@@ -1,0 +1,102 @@
+#include "iostream.bah"
+#include "string.bah"
+#include "json.bah"
+#include "reflect.bah"
+
+//Wraper for lazy-reading serialized JSON objects.
+//The file is structured as a 'transfer-encoding: chunked' http response.
+//Each object is written as the size (nb of chars) of the object followed by the object.
+//*This is not thread safe!*
+struct CJSON {
+    fs: fileStream
+    fn: cpstring
+    index: int = 0
+
+    //Used for openning a file.
+    open(fn cpstring) {
+        this.fs = fileStream{}
+        this.fs.open(fn, "r")
+        this.fn = fn
+        this.index = 0
+    }
+
+    //Used for closing the file descriptor.
+    close() {
+        this.fs.close()
+    }
+
+    //Used for scanning a json object. Each call will fetch the next one.
+    //This will return the index of the scanned object.
+    //If there is no more object to scan, this will return -1.
+    next(t reflectElement) int {
+        nbs = []char
+        c = this.fs.getChar()
+        for isSpace(c) {
+            c = this.fs.getChar()
+        }
+        if this.fs.getPos() == this.fs.getSize() {
+            return -1
+        }
+        for isNumber(c) {
+            nbs[len(nbs)] = c
+            c = this.fs.getChar()
+        }
+        size = strToInt(arrAsStr(nbs))
+        s cpstring = memoryAlloc(size)
+        this.fs.readPtr(s, size)
+        r = parseJson(s)
+        r.scan(t)
+        this.index = this.index + 1
+        return this.index - 1
+    }
+
+    //Used for appending an object to the end of the file.
+    append(t reflectElement) {
+        s = toJson(t)
+        rfs = fileStream{}
+        rfs.open(this.fn, "a")
+        rfs.writeFile("\n"+intToStr(strlen(s))+"\n"+s)
+        rfs.close()
+    }
+
+    //Used for deleting an object by its index.
+    delete(i int) {
+        tfs = fileStream{}
+        tfs.open(this.fn+".tmp", "w")
+        this.fs.setPos(0)
+
+        this.index = 0
+        for this.fs.getPos() < this.fs.getSize() {
+            nbs = []char
+            c = this.fs.getChar()
+            for isSpace(c) {
+                c = this.fs.getChar()
+            }
+            if this.fs.getPos() == this.fs.getSize() {
+                break
+            }
+            for isNumber(c) {
+                nbs[len(nbs)] = c
+                c = this.fs.getChar()
+            }
+            size = strToInt(arrAsStr(nbs))
+            if this.index == i {
+                this.fs.setPos(this.fs.getPos() + size)
+            } else {
+                s cpstring = memoryAlloc(size)
+                this.fs.readPtr(s, size)
+                tfs.writeFile(intToStr(size)+"\n"+s+"\n")
+            }
+            this.index = this.index + 1
+        }
+
+
+        tfs.close()
+        removeFile(this.fn)
+        rename(this.fn+".tmp", this.fn)
+        this.fs.close()
+        this.fs.open(this.fn, "r")
+        this.index = 0
+    }
+
+}
